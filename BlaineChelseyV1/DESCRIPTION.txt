@@ -1,0 +1,4 @@
+This is version one of the code, as of 3/16/24 it is the version running on Blaine and Chelsey's heart pair.
+Defining characteristics:
+1) Has several bug fixes (such as automatic reboot on wifi disconnect). The version without those fixes isn't running anywhere anymore, except for the MartyBel pair which hasn't been online in years
+2) Does NOT have dual color mode
