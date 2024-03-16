@@ -1,0 +1,4 @@
+This is version two of the code, as of 3/16/24 it is the version running on Liam ane Kenzie's heart pair.
+Defining characteristics:
+1) Has Dual Color mode
+2) Uses a single status indicator LED, which is run by three GPIO pins (NOT neopixel)
