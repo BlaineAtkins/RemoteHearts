@@ -1,0 +1,4 @@
+This will be the working version of the code that is not hard coded to be a specific pair, and can be continually updated. One firmware for every heart.
+Defining characteristics:
+1) Three status indicator LEDs as a second NEOPIXEL strip on D3
+2) Major code refactor compared to previous versions (asynchronous WiFiManager, pairing is not hard-coded, etc)
