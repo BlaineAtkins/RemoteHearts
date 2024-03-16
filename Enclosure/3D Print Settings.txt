@@ -1,0 +1,5 @@
+100% infill
+outer brim
+Tree support (sub-setting: Slim)
+
+Use a white fillament that has good opacity. Tested working with Atomic Bright White.
