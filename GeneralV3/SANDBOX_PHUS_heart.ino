@@ -1,8 +1,7 @@
 /* ///TODO
  *Search code for "todo" -- there's some notes
- *get multicolor mode working
  *figure out how more than 2 clients work -- make status LEDs work in that case
- *Rate limits MQTT messages while twisting knob -- maybe one per second? Then on receiver fade between previous color and received color 
+ *firmware updates
  *
 */
 #include <Adafruit_NeoPixel.h>
@@ -11,18 +10,24 @@
 #include <ESP8266WebServer.h>
 #include "src/WiFiManager/WiFiManager.h"         // quotation marks usues library in sketch folder which i can customize the webpage for. PLEASE NOTE -- in earlier versions, WiFiManager.cpp had digitalWrite() and analogWrite() lines manually added by Blaine for the status LED. Now that the status LEDs use neopixel, the library version with those lines should NOT be used, otherwise the LED strip will flicker along with other unexpected behavior
 #include <PubSubClient.h> //for mqtt
+#include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+
+const String FirmwareVer={"0.1"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
-//int clientNum=2; //1 is Kenzie, 2 is Liam
-char* clientName="USplus09402";
+char clientName[20];//="US";
 
-int numOtherClientsInGroup=1;
-char* otherClientsInGroup[3]={"PH"};
-char* groupName="PHUSSandbox";
+int numOtherClientsInGroup;//=1;
+char otherClientsInGroup[6][20]; //08:3A:8D:CC:DE:62 is assembled, 7C:87:CE:BE:36:0C is bare board
+char groupName[20];//="PHUSSandbox";
+int modelNumber;//=2; //1 is the original from 2021. 2 is the triple indicator neopixel version developed in 2024
 //END CLIENT SPECIFIC VARIABLES------------
 
 char groupTopic[70]; //should be large enough
 char multiColorTopic[84];
+char adminTopic[70];
 
 #define NUMPIXELS 12
 Adafruit_NeoPixel lights(NUMPIXELS, D4, NEO_GRB + NEO_KHZ800);
@@ -47,10 +52,13 @@ int colorKnob=0;
 unsigned long analogReadTimer=0;
 bool colorReadTurn=true;
 
-bool dualColorMode=false;
-unsigned long confirmColorModeTimer=0;;
+bool multiColorMode=false;
+unsigned long confirmColorModeTimer=60000*60*24-60000*15; //within first 15 minutes of being on, refresh this value (give it 15 mins to let user connect to wifi, hoping to avoid publishing the value before we know it)
 
-char sendVal[20]; //array to store value to send (must be long enough to hold the number and our client name)           //OLD COMMENT: //array to store value to send to other heart MUST BE [5] FOR 4 CHAR VALUE!! Due to because of termination char?
+unsigned long lastSentColorAt=0;
+bool currentlyChangingColor=false;
+
+char sendVal[50]; //array to store value to send (must be long enough to hold [color number; this client name; this MAC address --17 chars])           //OLD COMMENT: //array to store value to send to other heart MUST BE [5] FOR 4 CHAR VALUE!! Due to because of termination char?
 
 unsigned long lastPingSent; //time the last ping was sent
 unsigned long lastPingReceived;
@@ -61,14 +69,17 @@ boolean isDark;
 void setup() {
 
   Serial.begin(9600);
-
+  Serial.println("ABCDEFG NEW FIRMWARE BABY");
+  loadClientSpecificVariables();
   //set topic variable
-  strcpy(groupTopic,"BlaineProjects/RemoteHearts/");
+  strcpy(groupTopic,"BlaineProjects/RemoteHearts/groups/");
   strcat(groupTopic,groupName);
-  strcat(multiColorTopic,groupName);
+  strcat(multiColorTopic,groupTopic);
   
   strcat(groupTopic,"/color");
   strcat(multiColorTopic,"/multicolorMode");
+
+  strcpy(adminTopic,"BlaineProjects/RemoteHearts/admin");
   
 
   
@@ -146,53 +157,75 @@ void statusLEDs(int red, int green, int blue, int indicator){
 }
 
 void Received_Message(char* topic, byte* payload, unsigned int length) {
-/*  Serial.print("Message arrived [");
+  /*
+  Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
-*/
-  Serial.println("Received msg");
+  Serial.println();
+  */
+
+  payload[length] = '\0'; // Add a NULL to the end of the char* to make it a string.
+
+  //Serial.println("Received msg");
   
   if(strcmp(topic,multiColorTopic)==0){
     Serial.println("multicolor topic");
-    payload[length] = '\0'; // Add a NULL to the end of the char* to make it a string.
-    char* payloadChar = (char *)payload;
+    
+    char* payloadChar = (char *)payload; //......what kind of line is this?? ...but I'm scared to delete it
     if(strcmp(payloadChar,"true")==0){
-      dualColorMode=true;
+      multiColorMode=true;
     }else{
-      dualColorMode=false;
+      multiColorMode=false;
     }
+    Serial.println(multiColorMode);
+  }else if(strcmp(topic,adminTopic)==0){ //an admin command
+    String strPayload = String((char*)payload);
+    int firstCommaIndex=strPayload.indexOf(',');
+    int secondCommaIndex=strPayload.indexOf(',',firstCommaIndex+1);
+    String target=strPayload.substring(0,firstCommaIndex);
+    String command=strPayload.substring(firstCommaIndex+1,secondCommaIndex); //turns out that in substring "-1" is interpreted as the end of the string. and indexOf() returns -1 when not found. So this line still works fine when there is no second comma, and the payload variable just winds up with the whole message, which is fine cause it's unused in that case
+    String adminPayload=strPayload.substring(secondCommaIndex+1);
+
+    if(target=="all" || target==WiFi.macAddress()){
+      Serial.println("Received an admin command directed to this client");
+      Serial.println(target);
+      Serial.println(command);
+      Serial.println(adminPayload);
+      Serial.println("----------");
+    }
+    
   }else if(strcmp(topic,groupTopic)==0){
     
-    payload[length] = '\0'; // Add a NULL to the end of the char* to make it a string.
 
     String strPayload = String((char*)payload);
-    String fromClient = strPayload.substring(strPayload.indexOf(',')+1);
-    String receivedNumber = strPayload.substring(0,strPayload.indexOf(','));
+    int firstCommaIndex=strPayload.indexOf(',');
+    int secondCommaIndex=strPayload.indexOf(',',firstCommaIndex+1);
+    String receivedNumber = strPayload.substring(0,firstCommaIndex);
+    String fromClientMac = strPayload.substring(firstCommaIndex+1,secondCommaIndex);
+    String fromClientName = strPayload.substring(secondCommaIndex+1);
     /*
     Serial.print("Received number ");
     Serial.print(receivedNumber);
     Serial.print(" from client ");
-    Serial.println(fromClient);
+    Serial.println(fromClientName);
+    Serial.print(" with MAC ");
+    Serial.println(fromClientMac);
     */
-    char bufone[15];
-    fromClient.toCharArray(bufone,fromClient.length()+1);
-    if(strcmp(bufone,clientName)!=0){ //DO NOT PROCESS MESSAGE IF IT IS FROM OURSELVES
+    
+    char ch_fromClientMac[20];
+    fromClientMac.toCharArray(ch_fromClientMac,fromClientMac.length()+1);
+    if(strcmp(ch_fromClientMac,WiFi.macAddress().c_str())!=0){ //DO NOT PROCESS MESSAGE IF IT IS FROM OURSELVES
       char buf[receivedNumber.length()+1];
       receivedNumber.toCharArray(buf, receivedNumber.length()+1);
   
       int rcvNum = atoi(buf);
-      
       if(rcvNum==-1){ //if other heart just came online, ignore the value (-1), but ping it to let it know we're here too and give it our value
-        /*
-        if(clientNum==1){
-          client.publish("KenzieLiamHeart/LiamRcvSANDBOX", itoa(currentColor, sendVal,10));
-        }else{client.publish("KenzieLiamHeart/KenzieRcvSANDBOX", itoa(currentColor, sendVal,10));}
-        */
-        
         itoa(currentColor, sendVal,10);
+        strcat(sendVal,",");
+        strcat(sendVal,WiFi.macAddress().c_str());
         strcat(sendVal,",");
         strcat(sendVal,clientName);
         client.publish(groupTopic,sendVal);
@@ -201,20 +234,41 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
         int currentColorRemote; //the color of the other heart
         currentColorRemote = rcvNum; 
 
-        //TODO -- generalize the below for multicolor mode
-        if(dualColorMode){
-          /*
-          if(clientNum==1){ //kenzie on the right -- but receiving so it's backwards
-            for(int i=6;i<12;i++){
-              lights.setPixelColor(i, lights.Color(getColor(currentColorRemote,'r'),getColor(currentColorRemote,'g'),getColor(currentColorRemote,'b')));
-            }
-          }else{ //liam on the left -- but receiving so it's backwards
-            for(int i=0;i<6;i++){
-              lights.setPixelColor(i, lights.Color(getColor(currentColorRemote,'r'),getColor(currentColorRemote,'g'),getColor(currentColorRemote,'b')));
+        if(multiColorMode){
+          //create an array of client MAC addresses including our own to be sorted 
+          char clientsIncludingMe[numOtherClientsInGroup+1][20];
+          memcpy(clientsIncludingMe, otherClientsInGroup, numOtherClientsInGroup*20);
+          strcpy(clientsIncludingMe[numOtherClientsInGroup],WiFi.macAddress().c_str());
+          BubbleSort(clientsIncludingMe,numOtherClientsInGroup+1); //sort by MAC first in order to ensure consistant placement of each user across hearts
+
+          //figure out what section to update based on the sorted MACs
+          int sectionNumber=0;
+          for(int i=0;i<numOtherClientsInGroup+1;i++){
+            if(strcmp(ch_fromClientMac,clientsIncludingMe[i])==0){
+              sectionNumber=i;
             }
           }
-          */
+
+          int sectionSize=12/(numOtherClientsInGroup+1); //no remainder except for when we have 5 total clients
+          int fiveClientSectionSize[]={3,2,2,2,3}; //for 5 clients, section size is as follows to preserve symetry: 3,2,2,2,3
+
+          if(numOtherClientsInGroup+1!=5){
+            for(int i=sectionSize*sectionNumber;i<sectionSize*(sectionNumber+1);i++){
+              lights.setPixelColor(i, lights.Color(getColor(currentColorRemote,'r'),getColor(currentColorRemote,'g'),getColor(currentColorRemote,'b')));
+            }
+          }else{ //special case because 12 is not divisible by 5 -- NOTE: untested at this time (4/1/24)
+            int fiveClientSectionSize[]={3,2,2,2,3}; //for 5 clients, section size is as follows to preserve symetry: 3,2,2,2,3
+            int startAt=0;
+            for(int i=0;i<sectionNumber;i++){
+              startAt+=fiveClientSectionSize[i];
+            }
+            for(int i=startAt;i<startAt+fiveClientSectionSize[sectionNumber];i++){
+              lights.setPixelColor(i, lights.Color(getColor(currentColor,'r'),getColor(currentColor,'g'),getColor(currentColor,'b')));
+            }
+          }
+
         }else{
+          //TODO eventually: before this loop, define RGB values of the previous color and the future color. Then surround the loop with another loop that takes less than 500ms to fade from the first to the second color
           for(int i=0;i<NUMPIXELS;i++){
             lights.setPixelColor(i, lights.Color(getColor(currentColorRemote,'r'),getColor(currentColorRemote,'g'),getColor(currentColorRemote,'b')));
           }
@@ -236,26 +290,17 @@ void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect(clientName)) { //name of this client //TODO append some random characters otherwise common names will get kicked from the server
+    if (client.connect(WiFi.macAddress().c_str())){
       Serial.println("connected");
       statusLEDs(0,0,255,0);
-      // Once connected, publish an announcement...
-
-      /*
-      if(clientNum==1){
-        client.publish("KenzieLiamHeart/LiamRcvSANDBOX", itoa(-1, sendVal,10)); // -1 indicates we just came online and are requesting other heart's value
-        // ... and resubscribe
-        client.subscribe("KenzieLiamHeart/KenzieRcvSANDBOX");
-      }else{
-        client.publish("KenzieLiamHeart/KenzieRcvSANDBOX", itoa(-1, sendVal,10)); 
-        // ... and resubscribe
-        client.subscribe("KenzieLiamHeart/LiamRcvSANDBOX");
-      }
-      */
-      
+      // Once connected, publish an announcement and re-subscribe
       //Serial.println(groupTopic);
+      client.subscribe(adminTopic);
+      client.subscribe(multiColorTopic);
       client.subscribe(groupTopic); //subscribe first so that when we send -1 below, we can receive the response right away
       itoa(-1, sendVal,10);
+      strcat(sendVal,",");
+      strcat(sendVal,WiFi.macAddress().c_str());
       strcat(sendVal,",");
       strcat(sendVal,clientName);
       client.publish(groupTopic,sendVal); // -1 indicates we just came online and are requesting other heart's value
@@ -285,13 +330,9 @@ void pingAndStatus(){
 
   if(millis()-lastPingSent>timeout){
     //send a ping
-
-    /*
-    if(clientNum==1){
-      client.publish("KenzieLiamHeart/LiamRcvSANDBOX", itoa(currentColor, sendVal,10));
-    }else{client.publish("KenzieLiamHeart/KenzieRcvSANDBOX", itoa(currentColor, sendVal,10));}
-    */
     itoa(currentColor, sendVal,10);
+    strcat(sendVal,",");
+    strcat(sendVal,WiFi.macAddress().c_str());
     strcat(sendVal,",");
     strcat(sendVal,clientName);
     client.publish(groupTopic,sendVal); 
@@ -300,15 +341,14 @@ void pingAndStatus(){
 }
 
 void confirmColorMode(){ //every day, re-publish the current color mode to the MQTT broker since it only retains the last message for 3 days
-  //TODO generalize this function
   if(millis()-confirmColorModeTimer>60000*60*24 && client.connected()){
-    char* tempDualColorMode;
-    if(dualColorMode){
-      tempDualColorMode="true";
+    char* tempmultiColorMode;
+    if(multiColorMode){
+      tempmultiColorMode="true";
     }else{
-      tempDualColorMode="false";
+      tempmultiColorMode="false";
     }
-    client.publish("KenzieLiamHeart/dualColorSANDBOX",tempDualColorMode,true);
+    client.publish(multiColorTopic,tempmultiColorMode,true);
     confirmColorModeTimer=millis();
   }
 }
@@ -397,34 +437,67 @@ void loop(){
       currentColor=1024+currentColor;
     }
 
-    /*
-    if(clientNum==1){
-      client.publish("KenzieLiamHeart/LiamRcvSANDBOX", itoa(currentColor, sendVal,10));
-    }else{client.publish("KenzieLiamHeart/KenzieRcvSANDBOX", itoa(currentColor, sendVal,10));}
-    */
-    itoa(currentColor, sendVal,10);
-    strcat(sendVal,",");
-    strcat(sendVal,clientName);
-    client.publish(groupTopic,sendVal);
+    if(millis()-lastSentColorAt>500){ //while user is turning knob, only send value every half second to avoid flooding MQTT topic  
+      itoa(currentColor, sendVal,10);
+      strcat(sendVal,",");
+      strcat(sendVal,WiFi.macAddress().c_str());
+      strcat(sendVal,",");
+      strcat(sendVal,clientName);
+      client.publish(groupTopic,sendVal);
+      
+      lastSentColorAt=millis();
+      currentlyChangingColor=true;
+    }
     
     lastColorKnobVal=colorKnob;
     //Serial.print("sending new color to other heart: ");
     //Serial.println(currentColor);
   }
 
-  if(dualColorMode){
-    //TODO generalize the below for multicolor mode
-    /*
-    if(clientNum==1){ //kenzie on the right
-      for(int i=0;i<6;i++){
+  if(millis()-lastSentColorAt>500 && currentlyChangingColor){ //if user has just finished turning the knob, send one final color update (because the final color they settled on could have been within the last 500ms and therefore not sent)
+    currentlyChangingColor=false;
+
+    itoa(currentColor, sendVal,10);
+    strcat(sendVal,",");
+    strcat(sendVal,WiFi.macAddress().c_str());
+    strcat(sendVal,",");
+    strcat(sendVal,clientName);
+    client.publish(groupTopic,sendVal);
+  }
+
+  if(multiColorMode){
+
+    //create an array of client MAC addresses including our own to be sorted 
+    char clientsIncludingMe[numOtherClientsInGroup+1][20];
+    memcpy(clientsIncludingMe, otherClientsInGroup, numOtherClientsInGroup*20);
+    strcpy(clientsIncludingMe[numOtherClientsInGroup],WiFi.macAddress().c_str());
+    BubbleSort(clientsIncludingMe,numOtherClientsInGroup+1); //sort by MAC first in order to ensure consistant placement of each user across hearts
+
+    //figure out what section to update based on the sorted MACs
+    int sectionNumber=0;
+    for(int i=0;i<numOtherClientsInGroup+1;i++){
+      if(strcmp(WiFi.macAddress().c_str(),clientsIncludingMe[i])==0){
+        sectionNumber=i;
+      }
+    }
+
+    int sectionSize=12/(numOtherClientsInGroup+1); //no remainder except for when we have 5 total clients
+
+    if(numOtherClientsInGroup+1!=5){
+      for(int i=sectionSize*sectionNumber;i<sectionSize*(sectionNumber+1);i++){
         lights.setPixelColor(i, lights.Color(getColor(currentColor,'r'),getColor(currentColor,'g'),getColor(currentColor,'b')));
       }
-    }else{ //Liam on the left
-      for(int i=6;i<12;i++){
+    }else{ //special case because 12 is not divisible by 5 -- NOTE: untested at this time (4/1/24)
+      int fiveClientSectionSize[]={3,2,2,2,3}; //for 5 clients, section size is as follows to preserve symetry: 3,2,2,2,3
+      int startAt=0;
+      for(int i=0;i<sectionNumber;i++){
+        startAt+=fiveClientSectionSize[i];
+      }
+      for(int i=startAt;i<startAt+fiveClientSectionSize[sectionNumber];i++){
         lights.setPixelColor(i, lights.Color(getColor(currentColor,'r'),getColor(currentColor,'g'),getColor(currentColor,'b')));
       }
     }
-    */
+
   }else{
     for(int i=0;i<NUMPIXELS;i++){
       lights.setPixelColor(i, lights.Color(getColor(currentColor,'r'),getColor(currentColor,'g'),getColor(currentColor,'b')));
@@ -465,7 +538,11 @@ void setup_wifi() {
 
   if(WiFi.status()!=WL_CONNECTED){ //launch wifi manager in this block
     //String networkName=strcat(strcat(clientName,"'s Heart Setup - "),WiFi.macAddress().c_str());
-    String networkName=strcat(clientName,"'s Heart Setup");
+
+    char bufNetName[30];
+    strcpy(bufNetName,clientName);
+    strcat(bufNetName,"'s Heart Setup");
+    String networkName=String(bufNetName);
     Serial.print("Connection to saved network failed, starting config AP on: ");
     Serial.println(networkName);
 
@@ -544,4 +621,180 @@ int getColor(int color,char component){
   }else{
     return 0; //return 0 if they call for a component other than r/g/b
   }
+}
+
+void loadClientSpecificVariables(){
+  //for now using EEPROM, but this will eventually be a call to an external database
+  //WARNING: executing this code on an uninitialized EEPROM will cause the program to crash or behave erratically. There is protection against otherClientsInGroup having empty values, but other values or the whole eeprom being uninitialized (aka, not calling EEPROM.begin() & EEPROM.put() previously on this specific board) will cause problems
+  EEPROM.begin(170);
+  int address=0;
+
+  char ch_clientName[20];
+  EEPROM.get(address,ch_clientName);
+  address+=20;
+  char ch_groupName[20];
+  EEPROM.get(address,ch_groupName);
+  address+=20;
+  char ch_modelNumber[3];
+  EEPROM.get(address,ch_modelNumber);
+  address+=3;
+  char ch_numOtherClientsInGroup[3];
+  EEPROM.get(address,ch_numOtherClientsInGroup);
+  address+=3;
+  char ch_otherClientsInGroup0[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup0,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup0); 
+  }
+  address+=20;
+  char ch_otherClientsInGroup1[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup1,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup1); 
+  }
+  address+=20;
+  char ch_otherClientsInGroup2[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup2,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup2); 
+  }
+  address+=20;
+  char ch_otherClientsInGroup3[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup3,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup3); 
+  }
+  address+=20;
+  char ch_otherClientsInGroup4[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup4,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup4); 
+  }
+  address+=20;
+  char ch_otherClientsInGroup5[20];
+  if(EEPROM.read(address)==255){ //check if first byte is initialized before reading the whole thing. Reading in uninitialized values breaks things (I think what happens is EEPROM.get() doesn't stop reading until it runs in to a null terminator, so it reads in values much longer than 20 characters, causing all sorts of memory overflow errors)
+    strcpy(ch_otherClientsInGroup5,"");
+  }else{
+    EEPROM.get(address,ch_otherClientsInGroup5); 
+  }
+  
+  EEPROM.end();
+
+  strcpy(clientName,ch_clientName);
+  strcpy(groupName,ch_groupName);
+  modelNumber=atoi(ch_modelNumber);
+  numOtherClientsInGroup=atoi(ch_numOtherClientsInGroup);
+  strcpy(otherClientsInGroup[0],ch_otherClientsInGroup0);
+  strcpy(otherClientsInGroup[1],ch_otherClientsInGroup1);
+  strcpy(otherClientsInGroup[2],ch_otherClientsInGroup2);
+  strcpy(otherClientsInGroup[3],ch_otherClientsInGroup3);
+  strcpy(otherClientsInGroup[4],ch_otherClientsInGroup4);
+  strcpy(otherClientsInGroup[5],ch_otherClientsInGroup5);
+
+  Serial.println("LOADED VALUES:");
+  Serial.println(clientName);
+  Serial.println(groupName);
+  Serial.println(modelNumber);
+  Serial.println(numOtherClientsInGroup);
+  Serial.println(otherClientsInGroup[0]);
+  Serial.println(otherClientsInGroup[1]);
+  Serial.println(otherClientsInGroup[2]);
+  Serial.println(otherClientsInGroup[3]);
+  Serial.println(otherClientsInGroup[4]);
+  Serial.println(otherClientsInGroup[5]);
+
+  //if you need to write values, use the below code (or eventually you should be able to do it as an admin command via MQTT)
+  //write char arrays
+  /*
+  EEPROM.begin(170);
+  int address = 0;
+  EEPROM.put(address,clientName);
+  address+=20;
+  EEPROM.put(address,groupName);
+  address+=20;
+  EEPROM.put(address,modelNumber);
+  address+=3;
+  EEPROM.put(address,numOtherClientsInGroup);
+  address+=3;
+  EEPROM.put(address,otherClientsInGroup[0]);
+  address+=20;
+  EEPROM.put(address,otherClientsInGroup[1]);
+  address+=20;
+  ....up to otherClientsInGroup[5] if necessary
+  EEPROM.commit();
+  EEPROM.end();
+  */
+}
+
+//for reasons I don't understand, this doesn't need a return value. Whatever array gets passed in gets sorted in place
+void BubbleSort (char arry[][20], int m){ //m is number of elements
+    char valA[20];
+    char valB[20];
+    int i, j;
+    for (i = 0; i < m; ++i){
+        for (j = 0; j < m-i-1; ++j){
+            // Comparing consecutive elements and switching values when value at j > j+1.
+            if (strcmp(arry[j],arry[j+1])>0){     //if (arry[j] > arry[j+1])
+                //swap values
+                strcpy(valA,arry[j]);
+                strcpy(valB,arry[j+1]);
+                strcpy(arry[j],valB);
+                strcpy(arry[j+1],valA);
+            }
+        }
+    }  
+}
+
+
+void FirmwareUpdate()
+{
+    #define URL_fw_Version "/hafidh7/ESP8266-Update-Program-over-HTTPS/master/version.txt"
+    #define URL_fw_Bin "https://raw.githubusercontent.com/hafidh7/ESP8266-Update-Program-over-HTTPS/master/.pio/build/nodemcuv2/firmware.bin"
+    WiFiClientSecure client;
+    client.setInsecure(); //prevents having the update the CA certificate periodically (it expiring breaks github updates)
+
+    if (!client.connect(firmware_host, firmware_port)) {
+        Serial.print("Failed Connecting to ");
+        Serial.println(firmware_host);
+        return;
+    }
+    client.print(String("GET ") + URL_fw_Version + " HTTP/1.1\r\n" + "Host: " + firmware_host + "\r\n" + "User-Agent: BuildFailureDetectorESP8266\r\n" + "Connection: close\r\n\r\n");
+    while (client.connected()) {
+        String line = client.readStringUntil('\n');
+        if (line == "\r") {
+            //Serial.println("Headers received");
+            break;
+        }
+    }
+    String payload = client.readStringUntil('\n');
+    payload.trim();
+    if(payload.equals(FirmwareVer)) {
+        Serial.println("Device already on latest firmware version");
+    }
+    else {
+        Serial.println("New firmware detected");
+        Serial.println("Current firmware version "+FirmwareVer);
+        Serial.println("Firmware version "+payload+" is avalable");
+        //ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
+        t_httpUpdate_return ret = ESPhttpUpdate.update(client, URL_fw_Bin);
+        Serial.println("Update firmware to version "+payload);
+        switch (ret) {
+            case HTTP_UPDATE_FAILED:
+            Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+            break;
+
+            case HTTP_UPDATE_NO_UPDATES:
+            Serial.println("HTTP_UPDATE_NO_UPDATES");
+            break;
+
+            case HTTP_UPDATE_OK:
+            Serial.println("HTTP_UPDATE_OK");
+            break;
+        }
+    }
 }
