@@ -2,7 +2,7 @@
  *Search code for "todo" -- there's some notes
  *figure out how more than 2 clients work -- make status LEDs work in that case
  *firmware updates
- *
+ *figure out a way to prevent people from compiling this code on ESP core 3.0.0 (httpupdate fails!)
 */
 #include <Adafruit_NeoPixel.h>
 #include <ESP8266WiFi.h>
@@ -14,7 +14,12 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
 
-const String FirmwareVer={"0.1"}; //used to compare to GitHub firmware version to know whether to update
+#ifdef ARDUINO_ESP8266_RELEASE_ //3.0.0 also has a bug where they improperly defined this preprocessor directive. Assuming this is the only distribution they made this mistake, this should indicate we're on 3.0.0
+  #error "DO NOT USE 3.0.0 SDK -- there is a bug in the firmware with httpUpdate that breaks firmware updates via GitHub. SDK 2.7.4 tested working"
+#endif
+
+
+const String FirmwareVer={"0.12"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -28,6 +33,7 @@ int modelNumber;//=2; //1 is the original from 2021. 2 is the triple indicator n
 char groupTopic[70]; //should be large enough
 char multiColorTopic[84];
 char adminTopic[70];
+char consoleTopic[70]; //this topic is for hearts to publish to in response to admin commands, etc
 
 #define NUMPIXELS 12
 Adafruit_NeoPixel lights(NUMPIXELS, D4, NEO_GRB + NEO_KHZ800);
@@ -69,7 +75,6 @@ boolean isDark;
 void setup() {
 
   Serial.begin(9600);
-  Serial.println("ABCDEFG NEW FIRMWARE BABY");
   loadClientSpecificVariables();
   //set topic variable
   strcpy(groupTopic,"BlaineProjects/RemoteHearts/groups/");
@@ -80,8 +85,7 @@ void setup() {
   strcat(multiColorTopic,"/multicolorMode");
 
   strcpy(adminTopic,"BlaineProjects/RemoteHearts/admin");
-  
-
+  strcpy(consoleTopic,"BlaineProjects/RemoteHearts/console");
   
 
   pinMode(D0,INPUT); //light sensor input
@@ -113,14 +117,11 @@ void setup() {
   }
   
   setup_wifi();
-  /*WiFiManager manager;
-  manager.resetSettings();
-  manager.autoConnect();*/
-  
   
   // if you get here you have connected to the WiFi
   Serial.println("Connected.");
-  //digitalWrite(LED_BUILTIN,LOW);
+  Serial.println("THIS MESSAGE IS DISPLAYED ON WIFI CONNECTION");
+  firmwareUpdate();
 
   //END WIFI SETUP, BEGIN MQTT CONNECTION
   client.setServer(mqtt_server, 1883);
@@ -195,6 +196,45 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
       Serial.println(command);
       Serial.println(adminPayload);
       Serial.println("----------");
+
+
+      if(command=="FIRMWARE_UPDATE"){
+        if(adminPayload==strPayload){ //if there's no payload (due to parsing above, no payload means payload becomes whole message)
+          Serial.println("Checking for update from main firmware");
+          firmwareUpdate();
+        }else if(adminPayload=="alt"){
+          Serial.println("updating from alt firmware");
+          #define URL_fw_Bin "https://raw.githubusercontent.com/BlaineAtkins/RemoteHearts/main/sandboxFirmware.bin"
+          WiFiClientSecure client;
+          client.setInsecure(); //prevents having the update the CA certificate periodically
+          for(int i=0;i<3;i++){
+            statusLEDs(150,150,150,i); //all white indicates we're in a firmware update
+          }
+          ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
+          t_httpUpdate_return ret = ESPhttpUpdate.update(client, URL_fw_Bin);
+        }else{
+          Serial.println("invalid update source specified. Pass no parameter, or \"alt\"");
+        }
+      }
+      if(command=="GET_EEPROM"){
+        if(adminPayload==strPayload){ //get entire eeprom
+          Serial.println("printing whole EEPROM");
+          char eepromContents[170];
+          EEPROM.begin(170);
+          for(int i=0;i<170;i++){
+            if(EEPROM.read(i)==0){ //replace null terminators with unusual character so we can send this string without it getting cut off
+              eepromContents[i]=126;
+            }else if(EEPROM.read(i)==255){
+              eepromContents[i]=126;
+            }else{
+              eepromContents[i]=EEPROM.read(i);
+            }
+          }
+          eepromContents[169]='\0';
+          client.publish(consoleTopic,eepromContents);
+          EEPROM.end();
+        }
+      }
     }
     
   }else if(strcmp(topic,groupTopic)==0){
@@ -750,37 +790,67 @@ void BubbleSort (char arry[][20], int m){ //m is number of elements
     }  
 }
 
-
-void FirmwareUpdate()
-{
-    #define URL_fw_Version "/hafidh7/ESP8266-Update-Program-over-HTTPS/master/version.txt"
-    #define URL_fw_Bin "https://raw.githubusercontent.com/hafidh7/ESP8266-Update-Program-over-HTTPS/master/.pio/build/nodemcuv2/firmware.bin"
+void firmwareUpdate(){
+  
+    #define URL_fw_Version "https://raw.githubusercontent.com/BlaineAtkins/RemoteHearts/main/currentFirmwareVersion.txt"
+    #define URL_fw_Bin "https://raw.githubusercontent.com/BlaineAtkins/RemoteHearts/main/currentFirmware.bin"
+    
     WiFiClientSecure client;
-    client.setInsecure(); //prevents having the update the CA certificate periodically (it expiring breaks github updates)
+    client.setInsecure(); //prevents having the update the CA certificate periodically
 
-    if (!client.connect(firmware_host, firmware_port)) {
-        Serial.print("Failed Connecting to ");
-        Serial.println(firmware_host);
-        return;
-    }
-    client.print(String("GET ") + URL_fw_Version + " HTTP/1.1\r\n" + "Host: " + firmware_host + "\r\n" + "User-Agent: BuildFailureDetectorESP8266\r\n" + "Connection: close\r\n\r\n");
-    while (client.connected()) {
-        String line = client.readStringUntil('\n');
-        if (line == "\r") {
-            //Serial.println("Headers received");
-            break;
+    String payload;
+    int httpCode;
+    String fwurl = "";
+    fwurl += URL_fw_Version;
+    fwurl += "?";
+    fwurl += String(rand());
+
+
+    // Add a scoping block for HTTPClient https to make sure it is destroyed before WiFiClientSecure *client is 
+    HTTPClient https;
+
+    if (https.begin(client, fwurl)) 
+    { // HTTPS      
+      Serial.print("[HTTPS] GET...\n");
+      // start connection and send HTTP header
+      delay(100);
+      httpCode = https.GET();
+      delay(100);
+      if (httpCode == HTTP_CODE_OK) // if version received
+      {
+        payload = https.getString(); // save received version
+        Serial.println("Received msg ");
+        Serial.print(payload);
+        Serial.print(" from ");
+        Serial.println(fwurl);
+      } else {
+        Serial.print("error in downloading version file:");
+        Serial.println(httpCode);
+        if(httpCode==-1 || httpCode==-101){
+          Serial.println("HELP: This probably means the ESP is stuck in a captive portal. Make sure it is registered on the network.");
+          Serial.print("Your MAC address for registration is ");
+          Serial.println(WiFi.macAddress());
         }
+      }
+      https.end();
+    }else{
+      Serial.println("some error in http begin");
     }
-    String payload = client.readStringUntil('\n');
+    
     payload.trim();
+    Serial.print("Newest firmware version is ");
+    Serial.println(payload);
     if(payload.equals(FirmwareVer)) {
         Serial.println("Device already on latest firmware version");
     }
     else {
         Serial.println("New firmware detected");
+        for(int i=0;i<3;i++){
+          statusLEDs(150,150,150,i); //all white indicates we're in a firmware update
+        }
         Serial.println("Current firmware version "+FirmwareVer);
         Serial.println("Firmware version "+payload+" is avalable");
-        //ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
+        ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
         t_httpUpdate_return ret = ESPhttpUpdate.update(client, URL_fw_Bin);
         Serial.println("Update firmware to version "+payload);
         switch (ret) {
@@ -797,4 +867,5 @@ void FirmwareUpdate()
             break;
         }
     }
+    
 }
