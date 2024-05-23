@@ -18,8 +18,9 @@
   #error "DO NOT USE 3.0.0 SDK -- there is a bug in the firmware with httpUpdate that breaks firmware updates via GitHub. SDK 2.7.4 tested working, 3.0.1 firmware updates work too"
 #endif
 
+bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.2"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.13"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -354,6 +355,10 @@ void reconnect() {
     // Attempt to connect
     if (client.connect(WiFi.macAddress().c_str())){
       Serial.println("connected");
+      if(firstConnectAttempt){
+        client.publish("BlaineProjects/RemoteHearts/connectionLog",("boot,"+WiFi.macAddress()).c_str());
+      }
+      firstConnectAttempt=false;
       statusLEDs(0,0,255,0);
       // Once connected, publish an announcement and re-subscribe
       //Serial.println(groupTopic);
@@ -999,17 +1004,10 @@ int nthIndex(String str,char ch, int N){
 
 void updateTopicVariables(){
   strcpy(groupTopic,"BlaineProjects/RemoteHearts/groups/");
-  Serial.print("Group topic is now... ");
-  Serial.println(groupTopic);
   strcat(groupTopic,groupName);
-  Serial.print("and now...... ");
-  Serial.println(groupTopic);
-  Serial.print("after having been combined with name: ");
   Serial.println(groupName);
   strcpy(multiColorTopic,""); //re-initalize this to empty!! Otherwise it overflows when updated
   strcat(multiColorTopic,groupTopic);
-  Serial.print("and finally...... ");
-  Serial.println(groupTopic);
   strcat(groupTopic,"/color");
   strcat(multiColorTopic,"/multicolorMode");
   strcpy(adminTopic,"BlaineProjects/RemoteHearts/admin");
