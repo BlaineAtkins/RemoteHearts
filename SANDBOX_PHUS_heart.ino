@@ -8,6 +8,7 @@
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include "src/WiFiManager/WiFiManager.h"         // quotation marks usues library in sketch folder which i can customize the webpage for. PLEASE NOTE -- in earlier versions, WiFiManager.cpp had digitalWrite() and analogWrite() lines manually added by Blaine for the status LED. Now that the status LEDs use neopixel, the library version with those lines should NOT be used, otherwise the LED strip will flicker along with other unexpected behavior
+//#include <WiFiManager.h>
 #include <PubSubClient.h> //for mqtt
 #include <EEPROM.h>
 #include <ESP8266HTTPClient.h>
@@ -112,12 +113,38 @@ void setup() {
     lastBrightness=i; //leave this variable at wherever we end up according to loop ctr end
   }
 
+  Serial.print("This client's MAC address is: ");
+  Serial.println(WiFi.macAddress());
+
+  Serial.println("Checking EEPROM configuration...");
   //read in client name before wifi setup because the variable is used for the network name
-  EEPROM.begin(170);
+  EEPROM.begin(173);
+  //Serial.println(EEPROM.read(0));
+  //Serial.println(EEPROM.read(1));
+  //Serial.println(EEPROM.read(2));
+  if(!(EEPROM.read(0)=='A' && EEPROM.read(1)=='B' && EEPROM.read(2)=='C')){
+    Serial.println("EEPROM has never been initialized, initializing 173 bytes now.");
+    EEPROM.write(0,'A');
+    EEPROM.write(1,'B');
+    EEPROM.write(2,'C');
+    for(int i=3;i<173;i++){
+      EEPROM.write(i,0);
+    }
+    EEPROM.put(3,"New Heart");
+    EEPROM.commit();
+  }else{
+    Serial.println("EEPROM is already set up");
+  }
+  EEPROM.end();
+
+  //now open EEPROM again for actual usage
+  EEPROM.begin(173);
   char ch_clientName[20];
-  EEPROM.get(0,ch_clientName);
+  EEPROM.get(3,ch_clientName);
   EEPROM.end();
   strcpy(clientName,ch_clientName);
+  //Serial.print("read in ");
+  //Serial.println(clientName);
   
   setup_wifi();
   
@@ -227,9 +254,9 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
       if(command=="GET_EEPROM"){
         if(adminPayload==strPayload){ //get entire eeprom
           Serial.println("printing whole EEPROM");
-          char eepromContents[170];
-          EEPROM.begin(170);
-          for(int i=0;i<170;i++){
+          char eepromContents[173];
+          EEPROM.begin(173);
+          for(int i=0;i<173;i++){
             if(EEPROM.read(i)==0){ //replace null terminators with unusual character so we can send this string without it getting cut off
               eepromContents[i]=126;
             }else if(EEPROM.read(i)==255){
@@ -238,7 +265,7 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
               eepromContents[i]=EEPROM.read(i);
             }
           }
-          eepromContents[169]='\0';
+          eepromContents[172]='\0';
           client.publish(consoleTopic,eepromContents);
           EEPROM.end();
         }
@@ -592,6 +619,7 @@ void setup_wifi() {
   //manager.resetSettings();
   
   Serial.println("Attempting to connect to saved network");
+  //WiFi.begin();
   WiFi.begin();
   unsigned long startTime=millis();
   while(WiFi.status()!=WL_CONNECTED && millis()-startTime<14000){
@@ -694,6 +722,7 @@ void loadClientSpecificVariables(){
 
   getGoogleSheet(); //eventually should use a real database, not google sheets
   //EEPROM method has been deprecated and replaced with Google Sheets
+  //NOTE -- the below values are now offset by 3 due to eeprom initialization checking 
 /*  
   //for now using EEPROM, but this will eventually be a call to an external database
   //WARNING: executing this code on an uninitialized EEPROM will cause the program to crash or behave erratically. There is protection against otherClientsInGroup having empty values, but other values or the whole eeprom being uninitialized (aka, not calling EEPROM.begin() & EEPROM.put() previously on this specific board) will cause problems
@@ -965,14 +994,14 @@ void getGoogleSheet(){
 
       strcpy(clientName,(httpResult.substring(nthIndex(httpResult,'\"',1)+1,nthIndex(httpResult,'\"',2))).c_str());
       //COPY THIS NAME IN TO EEPROM IF IT DIFFERS, cause it is used in wifi setup pre-network connection
-      EEPROM.begin(170);
+      EEPROM.begin(173);
       char ch_clientName[20];
-      EEPROM.get(0,ch_clientName);
+      EEPROM.get(3,ch_clientName);
       EEPROM.end();
       if(strcmp(ch_clientName,clientName)!=0){ //if different, put new name in to EEPROM
         Serial.println("Name updated, updating local EEPROM value");
-        EEPROM.begin(170);
-        EEPROM.put(0,clientName);
+        EEPROM.begin(173);
+        EEPROM.put(3,clientName);
         EEPROM.end();
       }
       strcpy(groupName,(httpResult.substring(nthIndex(httpResult,'\"',3)+1,nthIndex(httpResult,'\"',4))).c_str());
