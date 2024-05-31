@@ -21,7 +21,7 @@
 
 bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.13"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.14"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
