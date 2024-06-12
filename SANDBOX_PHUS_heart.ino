@@ -21,7 +21,7 @@
 
 bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.15"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.16"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -39,6 +39,8 @@ char groupTopic[70]; //70 should be large enough
 char multiColorTopic[84];
 char adminTopic[70];
 char consoleTopic[70]; //this topic is for hearts to publish to in response to admin commands, etc
+
+bool receivedColorMode=false; //This variable is set true whenever we receive the multicolor mode, and false whenever we disconnect. This is to prevent this client from re-affirming the mode (publishing it to the broker to keep it active) incorrectly before we've actually received the current mode. It will probably be obsolete once we store this value in the database
 
 #define NUMPIXELS 12
 Adafruit_NeoPixel lights(NUMPIXELS, D4, NEO_GRB + NEO_KHZ800);
@@ -214,6 +216,7 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
   //Serial.println("Received msg");
   
   if(strcmp(topic,multiColorTopic)==0){
+    receivedColorMode=true;
     Serial.println("multicolor topic");
     
     char* payloadChar = (char *)payload; //......what kind of line is this?? ...but I'm scared to delete it
@@ -401,7 +404,10 @@ void reconnect() {
         client.publish("BlaineProjects/RemoteHearts/connectionLog",("boot,"+WiFi.macAddress()).c_str());
       }
       firstConnectAttempt=false;
+      receivedColorMode=false;
       statusLEDs(0,0,100,0); //TODO idk what this should be, or how we distinguish between "everyone else is offline" and "you are offline"
+      statusLEDs(0,0,100,1);
+      statusLEDs(255,0,255,2);
       // Once connected, publish an announcement and re-subscribe
       //Serial.println(groupTopic);
       client.subscribe(adminTopic);
@@ -419,8 +425,8 @@ void reconnect() {
       //statusLEDs(100,0,0,0);
       //for now, this pattern means we are offline
       statusLEDs(150,0,0,0);
-      statusLEDs(150,0,0,0);
-      statusLEDs(255,0,255,0);
+      statusLEDs(150,0,0,1);
+      statusLEDs(255,0,255,2);
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in  seconds");
@@ -470,7 +476,7 @@ void pingAndStatus(){
 }
 
 void confirmColorMode(){ //every day, re-publish the current color mode to the MQTT broker since it only retains the last message for 3 days
-  if(millis()-confirmColorModeTimer>60000*60*24 && client.connected()){
+  if(millis()-confirmColorModeTimer>60000*60*24 && client.connected() && receivedColorMode){ //last condition is to only publish the mode if we're already confident in what it is
     char* tempmultiColorMode;
     if(multiColorMode){
       tempmultiColorMode="true";
