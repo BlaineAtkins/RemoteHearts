@@ -1,7 +1,7 @@
 /* ///TODO
  *Search code for "todo" -- there's some notes
  *figure out how more than 2 clients work -- make status LEDs work in that case
- *make multicolor mode work on the new codebase 
+ *status indicaators are still a little funky
 */
 #include <Adafruit_NeoPixel.h>
 #include <ESP8266WiFi.h>
@@ -21,7 +21,7 @@
 
 bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.16"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.17"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -470,6 +470,11 @@ void pingAndStatus(){
       statusLEDs(70,0,0,i); //this client is offline
     }else{
       statusLEDs(0,70,0,i); //this client is online
+    }
+  }
+  if(numOtherClientsInGroup<3){
+    for(int i=numOtherClientsInGroup;i<3;i++){ //turn off status LEDs that are not in use
+      statusLEDs(0,0,0,i);
     }
   }
   
