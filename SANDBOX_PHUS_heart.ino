@@ -1,7 +1,7 @@
 /* ///TODO
  *Search code for "todo" -- there's some notes
  *figure out how more than 2 clients work -- make status LEDs work in that case
- *add eeprom write admin command
+ *make multicolor mode work on the new codebase 
 */
 #include <Adafruit_NeoPixel.h>
 #include <ESP8266WiFi.h>
@@ -31,6 +31,9 @@ char otherClientsInGroup[6][20]; //08:3A:8D:CC:DE:62 is assembled, 7C:87:CE:BE:3
 char groupName[20];//="PHUSSandbox";
 int modelNumber;//=2; //1 is the original from 2021. 2 is the triple indicator neopixel version developed in 2024
 //END CLIENT SPECIFIC VARIABLES------------
+
+unsigned long otherClientsLastPingReceived[6]; //Updated whenever we receive a ping, and used to determine online status. The order follows otherClientsInGroup
+//NOTE!! the above variable replaces lastPingReceived
 
 char groupTopic[70]; //70 should be large enough
 char multiColorTopic[84];
@@ -93,7 +96,7 @@ void setup() {
   indicators.begin();
   indicators.clear();
   indicators.show();
-  statusLEDs(255,0,0,0);
+  statusLEDs(100,0,0,0);
   
   //finsish lights setup
   lights.begin();
@@ -112,6 +115,7 @@ void setup() {
     }
     lastBrightness=i; //leave this variable at wherever we end up according to loop ctr end
   }
+
 
   Serial.print("This client's MAC address is: ");
   Serial.println(WiFi.macAddress());
@@ -188,8 +192,10 @@ void setup() {
 
 
 void statusLEDs(int red, int green, int blue, int indicator){
-  indicators.setPixelColor(indicator,indicators.Color(red,green,blue));
-  indicators.show();
+  if(indicator<3){ //ignore out of bounds 
+    indicators.setPixelColor(indicator,indicators.Color(red,green,blue));
+    indicators.show();
+  }
 }
 
 void Received_Message(char* topic, byte* payload, unsigned int length) {
@@ -241,7 +247,7 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
           Serial.println("updating from alt firmware");
           #define URL_fw_Bin "https://raw.githubusercontent.com/BlaineAtkins/RemoteHearts/main/sandboxFirmware.bin"
           WiFiClientSecure client;
-          client.setInsecure(); //prevents having the update the CA certificate periodically
+          client.setInsecure(); //prevents having to update the CA certificate periodically
           for(int i=0;i<3;i++){
             statusLEDs(150,150,150,i); //all white indicates we're in a firmware update
           }
@@ -272,7 +278,7 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
       }
       if(command=="DATABASE_UPDATE"){
         Serial.println("Will update all local variables with the values from the google sheet...");
-        getGoogleSheet();
+        loadClientSpecificVariables();
         //unsubscribe from old topics in case they were updated
         Serial.print("Unsubscribing from group ");
         Serial.println(groupTopic);
@@ -369,7 +375,16 @@ void Received_Message(char* topic, byte* payload, unsigned int length) {
       }
       
       lastPingReceived=millis();
-      statusLEDs(0,255,0,0);
+      //statusLEDs(0,100,0,0); //this should be handled in pingAndStatus() now
+
+      //Do parsing to store values for who's online
+      for(int i=0;i<numOtherClientsInGroup;i++){
+        if(strcmp(fromClientMac.c_str(),otherClientsInGroup[i])==0){ //find index to update
+          otherClientsLastPingReceived[i]=millis();
+        }
+      }
+
+      
     }
   }
 }
@@ -386,7 +401,7 @@ void reconnect() {
         client.publish("BlaineProjects/RemoteHearts/connectionLog",("boot,"+WiFi.macAddress()).c_str());
       }
       firstConnectAttempt=false;
-      statusLEDs(0,0,255,0);
+      statusLEDs(0,0,100,0); //TODO idk what this should be, or how we distinguish between "everyone else is offline" and "you are offline"
       // Once connected, publish an announcement and re-subscribe
       //Serial.println(groupTopic);
       client.subscribe(adminTopic);
@@ -401,7 +416,11 @@ void reconnect() {
       
       
     } else {
-      statusLEDs(255,0,0,0);
+      //statusLEDs(100,0,0,0);
+      //for now, this pattern means we are offline
+      statusLEDs(150,0,0,0);
+      statusLEDs(150,0,0,0);
+      statusLEDs(255,0,255,0);
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in  seconds");
@@ -419,7 +438,7 @@ void reconnect() {
 void pingAndStatus(){
   if(millis()-lastPingReceived>timeout+5000){
     //other heart is offline
-    statusLEDs(0,0,255,0);
+    //statusLEDs(0,0,100,0);
   }
 
   if(millis()-lastPingSent>timeout){
@@ -432,6 +451,22 @@ void pingAndStatus(){
     client.publish(groupTopic,sendVal); 
     lastPingSent=millis();
   }
+
+
+  //ABOVE IS OLD CODE FOR SINGLE STATUS LIGHT. BELOW IS NEW CODE WITH MULTIPLE INDICATOR LIGHTS
+
+  //We can assume otherClientsInGroup is sorted, as it is sorted whenever it is updated in loadClientSpecificVariables()
+  //We will use the other client's position in the array as the assigned number indicator
+  //the data updating happens in the callback for processing an incoming color
+
+  for(int i=0;i<numOtherClientsInGroup;i++){
+    if(millis()-otherClientsLastPingReceived[i]>timeout+5000){
+      statusLEDs(70,0,0,i); //this client is offline
+    }else{
+      statusLEDs(0,70,0,i); //this client is online
+    }
+  }
+  
 }
 
 void confirmColorMode(){ //every day, re-publish the current color mode to the MQTT broker since it only retains the last message for 3 days
@@ -642,7 +677,7 @@ void setup_wifi() {
     Serial.println(networkName);
 
     //set lights to indicate that we are in config mode
-    statusLEDs(255,50,0,0);
+    statusLEDs(255,60,0,0);
 
     // Switch wifiManager config portal IP from default 192.168.4.1 to 8.8.8.8. This ensures auto-load on some android devices which have 8.8.8.8 hard-coded in the OS.
     manager.setAPStaticIPConfig(IPAddress(8,8,8,8), IPAddress(8,8,8,8), IPAddress(255,255,255,0));
@@ -722,6 +757,10 @@ void loadClientSpecificVariables(){
 
   getGoogleSheet(); //eventually should use a real database, not google sheets
   //EEPROM method has been deprecated and replaced with Google Sheets
+
+  BubbleSort(otherClientsInGroup,numOtherClientsInGroup); //sort the array we just loaded so that indicator lights are consistant
+
+  
   //NOTE -- the below values are now offset by 3 due to eeprom initialization checking 
 /*  
   //for now using EEPROM, but this will eventually be a call to an external database
@@ -962,6 +1001,16 @@ void getGoogleSheet(){
           numrow+=6; //offset in google sheets
         }else{
           Serial.println("HEART NOT FOUND IN DATABASE! Will not function properly. Please insert this heart's MAC in to the database");
+          while(true){
+            for(int i=0;i<3;i++){
+              statusLEDs(100,0,0,i);
+            }
+            delay(500);
+            for(int i=0;i<3;i++){
+              statusLEDs(0,0,0,i);
+            }
+            delay(500);
+          }
         }
 
       }else{
