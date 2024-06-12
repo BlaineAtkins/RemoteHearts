@@ -1,7 +1,7 @@
 /* ///TODO
  *Search code for "todo" -- there's some notes
  *figure out how more than 2 clients work -- make status LEDs work in that case
- *status indicaators are still a little funky
+ *
 */
 #include <Adafruit_NeoPixel.h>
 #include <ESP8266WiFi.h>
@@ -21,7 +21,7 @@
 
 bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.17"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.18"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -32,7 +32,7 @@ char groupName[20];//="PHUSSandbox";
 int modelNumber;//=2; //1 is the original from 2021. 2 is the triple indicator neopixel version developed in 2024
 //END CLIENT SPECIFIC VARIABLES------------
 
-unsigned long otherClientsLastPingReceived[6]; //Updated whenever we receive a ping, and used to determine online status. The order follows otherClientsInGroup
+unsigned long otherClientsLastPingReceived[6]={4294000000,4294000000,4294000000,4294000000,4294000000,4294000000}; //Updated whenever we receive a ping, and used to determine online status. The order follows otherClientsInGroup. --- Initialized to near max value to avoid indicators being green at boot
 //NOTE!! the above variable replaces lastPingReceived
 
 char groupTopic[70]; //70 should be large enough
