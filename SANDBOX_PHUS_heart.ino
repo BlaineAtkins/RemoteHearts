@@ -21,7 +21,7 @@
 
 bool firstConnectAttempt=true; //set to false after first connection attempt so initial boot actions aren't repeated
 
-const String FirmwareVer={"0.18"}; //used to compare to GitHub firmware version to know whether to update
+const String FirmwareVer={"0.19"}; //used to compare to GitHub firmware version to know whether to update
 
 //CLIENT SPECIFIC VARIABLES----------------
 char clientName[20];//="US";
@@ -67,6 +67,7 @@ bool colorReadTurn=true;
 
 bool multiColorMode=false;
 unsigned long confirmColorModeTimer=60000*60*24-60000*15; //within first 15 minutes of being on, refresh this value (give it 15 mins to let user connect to wifi, hoping to avoid publishing the value before we know it)
+//....I just fixed a bug where it did exactly what the line above was trying to avoid. This time I fixed it with a variable that checks if we've received it already. So I think the above is unnecessary
 
 unsigned long lastSentColorAt=0;
 bool currentlyChangingColor=false;
@@ -98,7 +99,9 @@ void setup() {
   indicators.begin();
   indicators.clear();
   indicators.show();
-  statusLEDs(100,0,0,0);
+  for(int i=0;i<3;i++){
+    statusLEDs(100,0,0,i);
+  }
   
   //finsish lights setup
   lights.begin();
@@ -405,9 +408,6 @@ void reconnect() {
       }
       firstConnectAttempt=false;
       receivedColorMode=false;
-      statusLEDs(0,0,100,0); //TODO idk what this should be, or how we distinguish between "everyone else is offline" and "you are offline"
-      statusLEDs(0,0,100,1);
-      statusLEDs(255,0,255,2);
       // Once connected, publish an announcement and re-subscribe
       //Serial.println(groupTopic);
       client.subscribe(adminTopic);
@@ -424,9 +424,9 @@ void reconnect() {
     } else {
       //statusLEDs(100,0,0,0);
       //for now, this pattern means we are offline
-      statusLEDs(150,0,0,0);
-      statusLEDs(150,0,0,1);
-      statusLEDs(255,0,255,2);
+      for(int i=0;i<3;i++){
+        statusLEDs(100,0,0,i);
+      }
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in  seconds");
@@ -467,9 +467,9 @@ void pingAndStatus(){
 
   for(int i=0;i<numOtherClientsInGroup;i++){
     if(millis()-otherClientsLastPingReceived[i]>timeout+5000){
-      statusLEDs(70,0,0,i); //this client is offline
+      statusLEDs(0,0,50,i); //this client is offline
     }else{
-      statusLEDs(0,70,0,i); //this client is online
+      statusLEDs(0,50,0,i); //this client is online
     }
   }
   if(numOtherClientsInGroup<3){
@@ -688,7 +688,9 @@ void setup_wifi() {
     Serial.println(networkName);
 
     //set lights to indicate that we are in config mode
-    statusLEDs(255,60,0,0);
+    for(int i=0;i<3;i++){
+      statusLEDs(150,60,0,i);
+    }
 
     // Switch wifiManager config portal IP from default 192.168.4.1 to 8.8.8.8. This ensures auto-load on some android devices which have 8.8.8.8 hard-coded in the OS.
     manager.setAPStaticIPConfig(IPAddress(8,8,8,8), IPAddress(8,8,8,8), IPAddress(255,255,255,0));
